@@ -199,8 +199,22 @@ end
 
 -- Collect dub and subtitle languages, using AniDB lists if enabled and available.
 local function collect_language_sets(file, anime, cfg)
-  local dublangs = from(file.media.audio):select("language"):distinct():toArray()
-  local sublangs = from(file.media.sublanguages):distinct():toArray()
+  local dublangs = {}
+  local sublangs = {}
+  
+  -- Safely collect audio languages
+  local audio_tracks = safe(file, "media", "audio")
+  if audio_tracks then
+    dublangs = from(audio_tracks):select("language"):distinct():toArray()
+  end
+  
+  -- Safely collect subtitle languages
+  local sub_tracks = safe(file, "media", "sublanguages")
+  if sub_tracks then
+    sublangs = from(sub_tracks):distinct():toArray()
+  end
+  
+  -- Prefer AniDB lists if available
   if cfg.prefer_anidb_lang_lists and file.anidb then
     local adub = safe(file, "anidb", "media", "dublanguages")
     local asub = safe(file, "anidb", "media", "sublanguages")
