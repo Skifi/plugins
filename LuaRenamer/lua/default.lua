@@ -27,12 +27,17 @@ local config = {
   episode_language = Language.English, -- Preferred language for the episode name (if enabled).
   space_char = "_",                 -- Whitespace replacement character (used with cleanspaces).
   prefer_anidb_lang_lists = true,   -- If true and AniDB info is available, use AniDB's language lists for dub/sub tags.
-  include_audio_tag = true,         -- Add audio language tags ([DUAL-AUDIO], [MULTI-AUDIO], [DUB]).
+  include_audio_tag = false,         -- Add audio language tags ([DUAL-AUDIO], [MULTI-AUDIO], [DUB]).
   include_censorship = true,        -- Add [CEN]/[UNCEN] for restricted anime if enabled.
   include_crc = true,               -- Include CRC hash in filename (if available).
   include_year = false,             -- Add year, position controlled by the 'parts' array below.
   include_episode_name = false,     -- Include episode name if enabled and not generic.
-  skip_unknown_release_group = true, -- If true, omit [Unknown] when release group metadata is missing.
+  skip_unknown_release_group = false, -- If true, omit [Unknown] when release group metadata is missing.
+  log = {                          -- Logging configuration for this script
+    enabled = true,               -- Master switch; set false to silence all custom logs below
+    level = "info",               -- Minimum level to output: error < warn < info < debug
+    prefix = "LuaRenamer"          -- Prefix prepended to each log line for filtering
+  },
   media_tag_parts = {               -- Toggle each media property here to show/hide in the filename's (media_tag) segment.
     resolution      = true,         -- Show video resolution (e.g. 1080p)
     codec           = true,         -- Show video codec (e.g. HEVC, H264)
@@ -126,6 +131,28 @@ local function build_group(file)
     return "[" .. (rg.shortname or rg.name or "Unknown") .. "]"
   end
   return config.skip_unknown_release_group and "" or "[Unknown]"
+end
+
+-- ==========================
+--       LOGGING SUPPORT
+-- ==========================
+local LEVEL_ORDER = { error = 1, warn = 2, info = 3, debug = 4 }
+local function logcfg(level, msg)
+  local cfg = config.log
+  if not cfg or not cfg.enabled then return end
+  local threshold = LEVEL_ORDER[cfg.level] or LEVEL_ORDER.info
+  local this = LEVEL_ORDER[level] or LEVEL_ORDER.info
+  if this > threshold then return end
+  local full = string.format("[%s][%s] %s", cfg.prefix, level:upper(), msg)
+  if level == "debug" then
+    logdebug(full)
+  elseif level == "info" then
+    log(full)
+  elseif level == "warn" then
+    logwarn(full)
+  else
+    logerror(full)
+  end
 end
 
 -- Construct the anime title segment using the preferred language, truncated and sanitized.
@@ -365,22 +392,40 @@ end
 
 -- Safety check: ensure minimum required data is available
 if not anime or not file then
-  filename = file and file.name or "Unknown File"
+  logcfg("warn", "Missing anime or file; using fallback naming.")
+  local rawname = (file and file.name or "Unknown File")
+  filename = rawname:gsub('[<>:"/\\|%?%*]', "")
   subfolder = { "Unmapped Files" }
+  destination = "Unsorted"
+  logcfg("info", "Fallback filename: " .. filename)
   return
 end
 
+logcfg("debug", "Starting rename for file: " .. (file.name or "(no name)"))
+logcfg("debug", "Anime candidate: " .. (anime.preferredname or anime:getname(config.anime_language) or "(unknown)"))
+
 -- Step 1: Build all filename segments from metadata
 local group      = build_group(file)
+if group ~= "" then logcfg("debug", "Group segment => " .. group) else logcfg("debug", "Group segment omitted") end
 local animename  = build_anime_name(anime, config)
+logcfg("debug", "Anime name segment => " .. animename)
 local epnum      = build_episode_number(anime, episode, episodes, file)
+if epnum ~= "" then logcfg("debug", "Episode number segment => " .. epnum) end
 local epname     = build_episode_name(anime, episode, episodes, config)
+if epname ~= "" then logcfg("debug", "Episode title segment => " .. epname) end
 local dublangs, sublangs = collect_language_sets(file, anime, config)
+if #dublangs > 0 then logcfg("debug", "Audio languages => " .. table.concat(dublangs, ",")) end
+if #sublangs > 0 then logcfg("debug", "Subtitle languages => " .. table.concat(sublangs, ",")) end
 local langtag    = build_language_tag(dublangs, config)
+if langtag ~= "" then logcfg("debug", "Language tag => " .. langtag) end
 local centag     = build_censorship_tag(anime, file, config)
+if centag ~= "" then logcfg("debug", "Censorship tag => " .. centag) end
 local year_tag   = build_year(anime, config)
+if year_tag ~= "" then logcfg("debug", "Year tag => " .. year_tag) end
 local crctag     = build_hash_tag(file, config)
+if crctag ~= "" then logcfg("debug", "CRC tag => " .. crctag) end
 local media_tag  = build_media_tags(file, config)
+if media_tag ~= "" then logcfg("debug", "Media tag => " .. media_tag) end
 
 -- Step 2: Construct a parts table in desired filename order.
 -- To change file name format, reorder entries here.
@@ -399,6 +444,7 @@ local parts = {
 -- Step 3: Build and sanitize the filename
 filename = join_nonempty(parts, " "):cleanspaces(config.space_char)
 filename = sanitize(filename, config)
+logcfg("info", "Final filename => " .. filename)
 
 -- Step 4: Build the target folder name from anime ID, fallback for error/unknown.
 foldername = ""
@@ -408,6 +454,7 @@ else
   foldername = animename .. " [anidb-err]"
 end
 subfolder = { foldername }
+logcfg("debug", "Subfolder => " .. foldername)
 
 -- Step 5: Set destination folder for file move based on restriction (adult/hentai logic).
 if anime.restricted then
@@ -415,3 +462,4 @@ if anime.restricted then
 else
   destination = "Saya Anime Database"
 end
+logcfg("info", "Destination => " .. tostring(destination))
