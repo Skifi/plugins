@@ -32,6 +32,7 @@ local config = {
   include_crc = true,               -- Include CRC hash in filename (if available).
   include_year = false,             -- Add year, position controlled by the 'parts' array below.
   include_episode_name = false,     -- Include episode name if enabled and not generic.
+  skip_unknown_release_group = true, -- If true, omit [Unknown] when release group metadata is missing.
   media_tag_parts = {               -- Toggle each media property here to show/hide in the filename's (media_tag) segment.
     resolution      = true,         -- Show video resolution (e.g. 1080p)
     codec           = true,         -- Show video codec (e.g. HEVC, H264)
@@ -119,15 +120,17 @@ end
 -- Construct the release group name segment in square brackets.
 -- Falls back to [Unknown] if unavailable.
 local function build_group(file)
+  if not file then return config.skip_unknown_release_group and "" or "[Unknown]" end
   local rg = safe(file, "anidb", "releasegroup")
   if rg then
     return "[" .. (rg.shortname or rg.name or "Unknown") .. "]"
   end
-  return "[Unknown]"
+  return config.skip_unknown_release_group and "" or "[Unknown]"
 end
 
 -- Construct the anime title segment using the preferred language, truncated and sanitized.
 local function build_anime_name(anime, cfg)
+  if not anime then return "Unknown Anime" end
   local n = anime:getname(cfg.anime_language) or anime.preferredname or "Unknown Anime"
   n = n:truncate(cfg.max_name_len)
   n = sanitize(n, cfg)
@@ -137,7 +140,7 @@ end
 -- Construct the year segment in parentheses, if enabled and available.
 -- E.g.: "(2024)"
 local function build_year(anime, cfg)
-  if not cfg.include_year then return "" end
+  if not cfg.include_year or not anime then return "" end
   local startyear = safe(anime, "airdate", "year")
   if startyear then
     return "(" .. tostring(startyear) .. ")"
@@ -147,6 +150,7 @@ end
 
 -- Construct the episode number segment. Supports single/multi-episode numbers, adds version when present.
 local function build_episode_number(anime, episode, episodes, file)
+  if not anime or not file then return "" end
   local engepname = episode and episode:getname(Language.English) or ""
   local is_movie = (anime.type == AnimeType.Movie)
   if is_movie and engepname:find("^Complete Movie") then
@@ -202,6 +206,8 @@ local function collect_language_sets(file, anime, cfg)
   local dublangs = {}
   local sublangs = {}
   
+  if not file then return dublangs, sublangs end
+  
   -- Safely collect audio languages
   local audio_tracks = safe(file, "media", "audio")
   if audio_tracks then
@@ -249,7 +255,7 @@ end
 
 -- Build censorship tag ([CEN] or [UNCEN]) for restricted anime if enabled.
 local function build_censorship_tag(anime, file, cfg)
-  if not cfg.include_censorship then return "" end
+  if not cfg.include_censorship or not anime or not file then return "" end
   if not anime.restricted then return "" end
   local censored = safe(file, "anidb", "censored")
   if censored == nil then return "" end
@@ -258,15 +264,18 @@ end
 
 -- Build hash tag segment ([CRC]), can be extended for other hashes.
 local function build_hash_tag(file, cfg)
-  if not cfg.include_crc then return "" end
+  if not cfg.include_crc or not file then return "" end
   local crc = safe(file, "hashes", "crc")
-  if crc then return "[" .. crc .. "]" end
+  if crc then 
+    return "[" .. crc:upper() .. "]" 
+  end
   return ""
 end
 
 -- Build media technical info tag (resolution, codec, bitdepth, fps, HDR, audio codecs, channels, source).
 -- Controlled entirely by config.media_tag_parts toggles.
 local function build_media_tags(file, cfg)
+  if not file then return "" end
   local parts_cfg = cfg.media_tag_parts
 
   -- Extract candidate media properties from file metadata
@@ -353,6 +362,13 @@ end
 -- ==========================
 --         MAIN LOGIC
 -- ==========================
+
+-- Safety check: ensure minimum required data is available
+if not anime or not file then
+  filename = file and file.name or "Unknown File"
+  subfolder = { "Unmapped Files" }
+  return
+end
 
 -- Step 1: Build all filename segments from metadata
 local group      = build_group(file)
