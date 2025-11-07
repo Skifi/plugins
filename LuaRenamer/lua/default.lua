@@ -38,6 +38,13 @@ local config = {
     level = "info",               -- Minimum level to output: error < warn < info < debug
     prefix = "LuaRenamer"          -- Prefix prepended to each log line for filtering
   },
+  destinations = {                 -- Centralized destination folder names
+    restricted   = "Saya Hentai Database",  -- Destination for restricted (adult) anime
+    unrestricted = "Saya Anime Database",   -- Destination for normal anime
+    fallback     = "Unsorted",              -- Destination used in early fallback when data missing
+    unknown      = "Saya Unknown",          -- Destination for files with missing/unknown release group (override logic)
+    override     = nil                       -- Optional function(anime, file) -> string (custom dynamic destination)
+  },
   media_tag_parts = {               -- Toggle each media property here to show/hide in the filename's (media_tag) segment.
     resolution      = true,         -- Show video resolution (e.g. 1080p)
     codec           = true,         -- Show video codec (e.g. HEVC, H264)
@@ -116,6 +123,25 @@ end
 local function map_source(raw, cfg)
   if not raw or raw == "Unknown" then return "" end
   return cfg.mapping.source[raw] or raw
+end
+
+-- ==========================
+--  DESTINATION OVERRIDE SETUP
+-- ==========================
+-- Override logic requested: if release group is missing or resolves to 'Unknown',
+-- route the file to the special destination "Saya Unknown" instead of the normal
+-- restricted/unrestricted folders. Returning nil lets normal routing continue.
+if config.destinations then
+  config.destinations.override = function(anime, file)
+    if not file then return nil end
+    local rg = safe(file, "anidb", "releasegroup")
+    local name = rg and (rg.shortname or rg.name) or nil
+    -- Treat absence, empty string, or explicit 'Unknown' as unknown
+    if not name or name == "" or name == "Unknown" then
+      return config.destinations.unknown or "Saya Unknown"
+    end
+    return nil
+  end
 end
 
 -- ==========================
@@ -396,7 +422,7 @@ if not anime or not file then
   local rawname = (file and file.name or "Unknown File")
   filename = rawname:gsub('[<>:"/\\|%?%*]', "")
   subfolder = { "Unmapped Files" }
-  destination = "Unsorted"
+  destination = config.destinations.fallback or "Unsorted"
   logcfg("info", "Fallback filename: " .. filename)
   return
 end
@@ -457,9 +483,31 @@ subfolder = { foldername }
 logcfg("debug", "Subfolder => " .. foldername)
 
 -- Step 5: Set destination folder for file move based on restriction (adult/hentai logic).
-if anime.restricted then
-  destination = "Saya Hentai Database"
-else
-  destination = "Saya Anime Database"
+local custom_dest = nil
+if type(config.destinations.override) == "function" then
+  local ok, value = pcall(config.destinations.override, anime, file)
+  if ok and type(value) == "string" and value ~= "" then
+    custom_dest = value
+    logcfg("debug", "Override destination function returned: " .. value)
+  elseif not ok then
+    logcfg("warn", "Destination override function error: " .. tostring(value))
+  end
 end
-logcfg("info", "Destination => " .. tostring(destination))
+if not custom_dest then
+  if anime.restricted then
+    destination = config.destinations.restricted
+  else
+    destination = config.destinations.unrestricted
+  end
+else
+  destination = custom_dest
+end
+logcfg("debug", "Destination => " .. tostring(destination))
+
+-- ==========================
+--       SUMMARY LOG LINE
+-- ==========================
+local original_name = file.name or "(no original name)"
+local extension = file.extension and ("." .. file.extension) or ""
+local full_new_path = table.concat({ tostring(destination), foldername, filename .. extension }, "/")
+logcfg("info", string.format("RENAMED: original='%s' new='%s' path='%s'", original_name, filename .. extension, full_new_path))
