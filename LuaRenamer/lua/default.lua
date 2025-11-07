@@ -4,7 +4,6 @@
   Main Features:
     - Modular file name construction from metadata (release group, anime title, episode number, technical tags, language tags, censorship, year, hash).
     - Full configurability for technical media info segment; each property (resolution, codec, bitdepth, fps, HDR, audio codecs, channels, source) is toggled in config.media_tag_parts.
-    - No abbreviation of "Season X" (keeps full original anime title).
     - Ability to enable/disable inclusion of episode name in the file name (see config.include_episode_name).
     - "Year" tag (year_tag) position in filename structure is fully customizable by arranging entries in the 'parts' table below.
 
@@ -32,15 +31,15 @@ local config = {
   include_crc = true,               -- Include CRC hash in filename (if available).
   include_year = false,             -- Add year, position controlled by the 'parts' array below.
   include_episode_name = false,     -- Include episode name if enabled and not generic.
-  media_tag_parts = {         -- Toggle each media property here to show/hide in the filename's (media_tag) segment.
-    resolution      = true,   -- Show video resolution (e.g. 1080p)
-    codec           = true,   -- Show video codec (e.g. HEVC, H264)
-    bitdepth        = true,   -- Show bit depth (e.g. 10bit)
-    fps             = false,  -- Show frames per second (e.g. 23.98fps)
-    hdr             = false,  -- Show HDR tag if present and not SDR
-    audio_codec     = false,  -- Show listed audio codecs (e.g. AAC, FLAC)
-    audio_channels  = false,  -- Show audio channel summary (e.g. 2ch, 6ch)
-    source          = true,   -- Show video source (WEB, BluRay, etc.)
+  media_tag_parts = {               -- Toggle each media property here to show/hide in the filename's (media_tag) segment.
+    resolution      = true,         -- Show video resolution (e.g. 1080p)
+    codec           = true,         -- Show video codec (e.g. HEVC, H264)
+    bitdepth        = true,         -- Show bit depth (e.g. 10bit)
+    fps             = false,        -- Show frames per second (e.g. 23.98fps)
+    hdr             = false,        -- Show HDR tag if present and not SDR
+    audio_codec     = false,        -- Show listed audio codecs (e.g. AAC, FLAC)
+    audio_channels  = false,        -- Show audio channel summary (e.g. 2ch, 6ch)
+    source          = true,         -- Show video source (WEB, BluRay, etc.)
   },
   illegal = {                       -- Windows filename character cleanup.
     remove = true,                  -- If true, strip all illegal characters.
