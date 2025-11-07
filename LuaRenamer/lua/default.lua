@@ -470,7 +470,7 @@ local parts = {
 -- Step 3: Build and sanitize the filename
 filename = join_nonempty(parts, " "):cleanspaces(config.space_char)
 filename = sanitize(filename, config)
-logcfg("info", "Final filename => " .. filename)
+logcfg("debug", "Final filename => " .. filename)
 
 -- Step 4: Build the target folder name from anime ID, fallback for error/unknown.
 foldername = ""
@@ -508,6 +508,16 @@ logcfg("debug", "Destination => " .. tostring(destination))
 --       SUMMARY LOG LINE
 -- ==========================
 local original_name = file.name or "(no original name)"
-local extension = file.extension and ("." .. file.extension) or ""
-local full_new_path = table.concat({ tostring(destination), foldername, filename .. extension }, "/")
-logcfg("info", string.format("RENAMED: original='%s' new='%s' path='%s'", original_name, filename .. extension, full_new_path))
+local extension = file.extension and ("" .. file.extension) or ""
+-- Original full path uses the current import folder location (before move) combined with file.path
+local import_loc = safe(file, "importfolder", "location") or "(unknown-import)"
+local original_rel = file.path or original_name
+local original_full_path = import_loc .. "/" .. original_rel
+local new_full_path = table.concat({ tostring(destination), foldername, filename .. extension }, "/")
+    -- Only log summary if filename actually changed (case-insensitive comparison)
+    if original_name:lower() ~= filename:lower() then
+      logcfg("info", string.format("%-8s : %s", "ORIGINAL", original_full_path))
+      logcfg("info", string.format("%-8s : %s", "NEW", new_full_path))
+    else
+      logcfg("debug", "Filename unchanged; summary suppressed.")
+    end
