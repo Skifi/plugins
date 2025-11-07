@@ -27,6 +27,7 @@ local config = {
   episode_language = Language.English, -- Preferred language for the episode name (if enabled).
   space_char = "_",                 -- Whitespace replacement character (used with cleanspaces).
   prefer_anidb_lang_lists = true,   -- If true and AniDB info is available, use AniDB's language lists for dub/sub tags.
+  include_audio_tag = true,         -- Add audio language tags ([DUAL-AUDIO], [MULTI-AUDIO], [DUB]).
   include_censorship = true,        -- Add [CEN]/[UNCEN] for restricted anime if enabled.
   include_crc = true,               -- Include CRC hash in filename (if available).
   include_year = false,             -- Add year, position controlled by the 'parts' array below.
@@ -198,19 +199,20 @@ end
 
 -- Collect dub and subtitle languages, using AniDB lists if enabled and available.
 local function collect_language_sets(file, anime, cfg)
-  local dublangs = from(file.media.audio):select("language"):distinct()
-  local sublangs = from(file.media.sublanguages):distinct()
+  local dublangs = from(file.media.audio):select("language"):distinct():toArray()
+  local sublangs = from(file.media.sublanguages):distinct():toArray()
   if cfg.prefer_anidb_lang_lists and file.anidb then
     local adub = safe(file, "anidb", "media", "dublanguages")
     local asub = safe(file, "anidb", "media", "sublanguages")
-    if adub then dublangs = from(adub):distinct() end
-    if asub then sublangs = from(asub):distinct() end
+    if adub then dublangs = from(adub):distinct():toArray() end
+    if asub then sublangs = from(asub):distinct():toArray() end
   end
   return dublangs, sublangs
 end
 
 -- Build language tag ([DUAL-AUDIO], [MULTI-AUDIO], [DUB]) based on detected languages.
 local function build_language_tag(dublangs, cfg)
+  if not cfg.include_audio_tag then return "" end
   local total = #dublangs
   if total == 0 then return "" end
   local nonnative = 0
