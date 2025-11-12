@@ -38,12 +38,9 @@ local config = {
     level = "info",               -- Minimum level to output: error < warn < info < debug
     prefix = "LuaRenamer"          -- Prefix prepended to each log line for filtering
   },
-  destinations = {                 -- Centralized destination folder names
-    restricted   = "Saya Hentai Database",  -- Destination for restricted (adult) anime
-    unrestricted = "Saya Anime Database",   -- Destination for normal anime
-    fallback     = "Unsorted",              -- Destination used in early fallback when data missing
-    unknown      = "Saya Unknown",          -- Destination for files with missing/unknown release group (override logic)
-    override     = nil                       -- Optional function(anime, file) -> string (custom dynamic destination)
+  destinations = {                 -- Destination folder names for moves (leave empty or nil to disable moving)
+    restricted   = "Saya Hentai Database",  -- Restricted (adult) anime target folder
+    unrestricted = "Saya Anime Database",   -- Normal anime target folder
   },
   media_tag_parts = {               -- Toggle each media property here to show/hide in the filename's (media_tag) segment.
     resolution      = true,         -- Show video resolution (e.g. 1080p)
@@ -125,24 +122,22 @@ local function map_source(raw, cfg)
   return cfg.mapping.source[raw] or raw
 end
 
--- ==========================
---  DESTINATION OVERRIDE SETUP
--- ==========================
--- Override logic requested: if release group is missing or resolves to 'Unknown',
--- route the file to the special destination "Saya Unknown" instead of the normal
--- restricted/unrestricted folders. Returning nil lets normal routing continue.
-if config.destinations then
-  config.destinations.override = function(anime, file)
-    if not file then return nil end
-    local rg = safe(file, "anidb", "releasegroup")
-    local name = rg and (rg.shortname or rg.name) or nil
-    -- Treat absence, empty string, or explicit 'Unknown' as unknown
-    if not name or name == "" or name == "Unknown" then
-      return config.destinations.unknown or "Saya Unknown"
-    end
-    return nil
-  end
+-- Normalize language codes/names to a consistent canonical form used in config.native_audio_langs.
+-- Returns nil for unknown/unwanted values so they can be filtered out.
+local function normalize_language(lang)
+  if not lang then return nil end
+  if type(lang) ~= "string" then lang = tostring(lang) end
+  local l = lang:lower()
+  if l == "jpn" or l == "ja" or l == "japanese" then return "Japanese" end
+  if l == "eng" or l == "en" or l == "english" then return "English" end
+  if l == "chi" or l == "zh" or l == "chinese" then return "Chinese" end
+  if l == "kor" or l == "ko" or l == "korean" then return "Korean" end
+  if l == "unknown" or l == "und" or l == "" then return nil end
+  -- Fallback: keep original (capitalization may vary)
+  return lang
 end
+
+-- (Destination override removed; only restricted/unrestricted remain. Unknown/fallback cases won't move.)
 
 -- ==========================
 --    SEGMENT GENERATORS
@@ -256,30 +251,50 @@ end
 
 -- Collect dub and subtitle languages, using AniDB lists if enabled and available.
 local function collect_language_sets(file, anime, cfg)
-  local dublangs = {}
-  local sublangs = {}
-  
-  if not file then return dublangs, sublangs end
-  
-  -- Safely collect audio languages
-  local audio_tracks = safe(file, "media", "audio")
-  if audio_tracks then
-    dublangs = from(audio_tracks):select("language"):distinct():toArray()
+  local raw_dub = {}
+  local raw_sub = {}
+  if not file then return raw_dub, raw_sub end
+
+  -- Audio tracks languages
+  local audio_tracks = safe(file, "media", "audio") or {}
+  for _, track in ipairs(audio_tracks) do
+    if track.language then table.insert(raw_dub, track.language) end
   end
-  
-  -- Safely collect subtitle languages
-  local sub_tracks = safe(file, "media", "sublanguages")
-  if sub_tracks then
-    sublangs = from(sub_tracks):distinct():toArray()
-  end
-  
-  -- Prefer AniDB lists if available
+
+  -- Subtitle languages (string array)
+  local sub_tracks = safe(file, "media", "sublanguages") or {}
+  for _, sl in ipairs(sub_tracks) do table.insert(raw_sub, sl) end
+
+  -- AniDB preferred lists override raw when requested
   if cfg.prefer_anidb_lang_lists and file.anidb then
     local adub = safe(file, "anidb", "media", "dublanguages")
     local asub = safe(file, "anidb", "media", "sublanguages")
-    if adub then dublangs = from(adub):distinct():toArray() end
-    if asub then sublangs = from(asub):distinct():toArray() end
+    if adub then raw_dub = adub end
+    if asub then raw_sub = asub end
   end
+
+  -- Normalize + distinct filtering
+  local dub_set = {}
+  local sub_set = {}
+  for _, lang in ipairs(raw_dub) do
+    local norm = normalize_language(lang)
+    if norm then dub_set[norm] = true end
+  end
+  for _, lang in ipairs(raw_sub) do
+    local norm = normalize_language(lang)
+    if norm then sub_set[norm] = true end
+  end
+
+  local dublangs = {}
+  local sublangs = {}
+  for l,_ in pairs(dub_set) do table.insert(dublangs, l) end
+  for l,_ in pairs(sub_set) do table.insert(sublangs, l) end
+  table.sort(dublangs)
+  table.sort(sublangs)
+
+  -- Logging of normalized sets (debug level)
+  if #dublangs > 0 then logcfg("debug", "Normalized audio languages => " .. table.concat(dublangs, ",")) end
+  if #sublangs > 0 then logcfg("debug", "Normalized subtitle languages => " .. table.concat(sublangs, ",")) end
   return dublangs, sublangs
 end
 
@@ -290,9 +305,7 @@ local function build_language_tag(dublangs, cfg)
   if total == 0 then return "" end
   local nonnative = 0
   for _, lang in ipairs(dublangs) do
-    -- Convert Language enum to string for comparison if needed
-    local langstr = type(lang) == "string" and lang or tostring(lang)
-    if not cfg.native_audio_langs[langstr] and langstr ~= "Unknown" then
+    if not cfg.native_audio_langs[lang] then
       nonnative = nonnative + 1
     end
   end
@@ -418,12 +431,12 @@ end
 
 -- Safety check: ensure minimum required data is available
 if not anime or not file then
-  logcfg("warn", "Missing anime or file; using fallback naming.")
+  logcfg("warn", "Missing anime or file; using fallback naming (no move).")
   local rawname = (file and file.name or "Unknown File")
   filename = rawname:gsub('[<>:"/\\|%?%*]', "")
   subfolder = { "Unmapped Files" }
-  destination = config.destinations.fallback or "Unsorted"
-  logcfg("info", "Fallback filename: " .. filename)
+  -- destination left nil to keep file in its current import folder
+  logcfg("info", "Fallback filename (stay) => " .. filename)
   return
 end
 
@@ -483,24 +496,13 @@ subfolder = { foldername }
 logcfg("debug", "Subfolder => " .. foldername)
 
 -- Step 5: Set destination folder for file move based on restriction (adult/hentai logic).
-local custom_dest = nil
-if type(config.destinations.override) == "function" then
-  local ok, value = pcall(config.destinations.override, anime, file)
-  if ok and type(value) == "string" and value ~= "" then
-    custom_dest = value
-    logcfg("debug", "Override destination function returned: " .. value)
-  elseif not ok then
-    logcfg("warn", "Destination override function error: " .. tostring(value))
-  end
-end
-if not custom_dest then
-  if anime.restricted then
-    destination = config.destinations.restricted
-  else
-    destination = config.destinations.unrestricted
-  end
+-- Destination decision: only set destination for restricted/unrestricted; otherwise leave nil (stay in place)
+if anime.restricted and config.destinations.restricted then
+  destination = config.destinations.restricted
+elseif (not anime.restricted) and config.destinations.unrestricted then
+  destination = config.destinations.unrestricted
 else
-  destination = custom_dest
+  destination = nil -- stay
 end
 logcfg("debug", "Destination => " .. tostring(destination))
 
@@ -508,12 +510,17 @@ logcfg("debug", "Destination => " .. tostring(destination))
 --       SUMMARY LOG LINE
 -- ==========================
 local original_name = file.name or "(no original name)"
-local extension = file.extension and ("" .. file.extension) or ""
+local extension = file.extension and ("." .. file.extension) or ""
 -- Original full path uses the current import folder location (before move) combined with file.path
 local import_loc = safe(file, "importfolder", "location") or "(unknown-import)"
 local original_rel = file.path or original_name
 local original_full_path = import_loc .. "/" .. original_rel
-local new_full_path = table.concat({ tostring(destination), foldername, filename .. extension }, "/")
+local new_full_path
+if destination then
+  new_full_path = table.concat({ tostring(destination), foldername, filename .. extension }, "/")
+else
+  new_full_path = table.concat({ "(stay)", foldername, filename .. extension }, "/")
+end
     -- Only log summary if filename actually changed (case-insensitive comparison)
     if original_name:lower() ~= filename:lower() then
       logcfg("info", string.format("%-8s : %s", "ORIGINAL", original_full_path))
