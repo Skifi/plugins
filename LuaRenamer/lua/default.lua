@@ -1,64 +1,102 @@
 --[[
-  Shoko Lua Renamer – Detailed and Fully Configurable Media Tag Version
+  Shoko Lua Renamer – Comprehensive Metadata-Driven Filename Generator
 
-  Main Features:
-    - Modular file name construction from metadata (release group, anime title, episode number, technical tags, language tags, censorship, year, hash).
-    - Full configurability for technical media info segment; each property (resolution, codec, bitdepth, fps, HDR, audio codecs, channels, source) is toggled in config.media_tag_parts.
-    - Ability to enable/disable inclusion of episode name in the file name (see config.include_episode_name).
-    - "Year" tag (year_tag) position in filename structure is fully customizable by arranging entries in the 'parts' table below.
+  OVERVIEW:
+    This script generates structured, metadata-rich filenames for anime files managed by Shoko Server.
+    It constructs filenames from multiple configurable segments including release group, anime title,
+    episode numbering, technical specifications, language tags, censorship indicators, year, and hash.
 
-  IMPORTANT NOTES:
-    - The variable 'filename' MUST be global, not local. Shoko needs to access it.
-    - Do NOT add the file extension; Shoko will automatically append the original extension.
-    - 'subfolder' MUST be a table (array); Shoko uses it to build the directory path.
-    - 'destination' should be set only if you want Shoko to move files between Import Folders.
-    - Change the order of filename segments by reordering the 'parts' array below.
+  KEY FEATURES:
+    - Modular filename construction with customizable segment ordering
+    - Granular control over technical media tags (resolution, codec, bitdepth, fps, HDR, audio)
+    - Language detection with normalization (supports ISO codes and full names)
+    - Optional audio language tags ([DUAL-AUDIO], [MULTI-AUDIO], [DUB])
+    - Configurable logging system with multiple log levels (error, warn, info, debug)
+    - Conditional file moving between Import Folders (restricted/unrestricted)
+    - Files stay in place when no destination matches
 
-    Current filename segment order:
-      [GROUP] [ANIME_NAME] [EPISODE_NUMBER] [EPISODE_NAME?] (MEDIA_TAG) [LANG_TAG] [CEN/UNCEN] (YEAR) [CRC]
+  CONFIGURATION HIGHLIGHTS:
+    - prefer_anidb_lang_lists: Use curated AniDB language lists vs physical track detection
+    - include_audio_tag: Enable/disable audio language tags in filename
+    - skip_unknown_release_group: Omit [Unknown] tag when release group is missing
+    - destinations: Only restricted/unrestricted folders; unmatched files remain in import folder
+    - media_tag_parts: Individual toggles for each technical property
+
+  SHOKO REQUIREMENTS:
+    - 'filename' MUST be a global variable (without extension)
+    - 'subfolder' MUST be a table/array (Shoko builds the directory path from it)
+    - 'destination' should be set only when moving files between Import Folders
+    - File extension is automatically appended by Shoko
+
+  FILENAME SEGMENT ORDER (customizable via 'parts' array):
+    [GROUP] [ANIME_NAME] [EPISODE_NUMBER] [EPISODE_NAME?] (MEDIA_TAG) [LANG_TAG] [CEN/UNCEN] (YEAR) [CRC]
 ]]
 
 -- ==========================
 --       CONFIGURATION
 -- ==========================
 local config = {
-  max_name_len = 100,               -- Maximum length (characters) for the anime title.
-  anime_language = Language.Romaji, -- Preferred language for the anime title.
-  episode_language = Language.English, -- Preferred language for the episode name (if enabled).
-  space_char = "_",                 -- Whitespace replacement character (used with cleanspaces).
-  prefer_anidb_lang_lists = true,   -- If true and AniDB info is available, use AniDB's language lists for dub/sub tags.
-  include_audio_tag = false,         -- Add audio language tags ([DUAL-AUDIO], [MULTI-AUDIO], [DUB]).
-  include_censorship = true,        -- Add [CEN]/[UNCEN] for restricted anime if enabled.
-  include_crc = true,               -- Include CRC hash in filename (if available).
-  include_year = false,             -- Add year, position controlled by the 'parts' array below.
-  include_episode_name = false,     -- Include episode name if enabled and not generic.
-  skip_unknown_release_group = false, -- If true, omit [Unknown] when release group metadata is missing.
-  log = {                          -- Logging configuration for this script
-    enabled = true,               -- Master switch; set false to silence all custom logs below
-    level = "info",               -- Minimum level to output: error < warn < info < debug
-    prefix = "LuaRenamer"          -- Prefix prepended to each log line for filtering
+  -- ANIME & EPISODE NAMING
+  max_name_len = 100,               -- Maximum character length for anime title (truncated if exceeded).
+  anime_language = Language.Romaji, -- Language preference for anime title (Romaji, English, Japanese, etc.).
+  episode_language = Language.English, -- Language preference for episode title (if include_episode_name is enabled).
+  space_char = "_",                 -- Character used to replace spaces in filenames (cleanspaces function).
+  
+  -- LANGUAGE DETECTION & TAGGING
+  prefer_anidb_lang_lists = true,   -- If true, AniDB language lists override physical track detection (more curated but less file-specific).
+  include_audio_tag = false,         -- Add audio language tags: [DUAL-AUDIO] (2 langs), [MULTI-AUDIO] (3+ langs), [DUB] (non-native dub).
+  native_audio_langs = {            -- Languages considered 'native' for DUB tag logic (i.e., not dubbed if only these present).
+    ["Japanese"] = true,
+    ["Chinese"]  = true,
+    ["Korean"]   = true,
   },
-  destinations = {                 -- Destination folder names for moves (leave empty or nil to disable moving)
-    restricted   = "Saya Hentai Database",  -- Restricted (adult) anime target folder
-    unrestricted = "Saya Anime Database",   -- Normal anime target folder
+  
+  -- OPTIONAL FILENAME COMPONENTS
+  include_censorship = true,        -- Add [CEN] or [UNCEN] tag for restricted (adult) anime.
+  include_crc = true,               -- Include [CRC] hash in filename (uppercase, if available).
+  include_year = false,             -- Add release year in parentheses (position controlled by 'parts' array order).
+  include_episode_name = false,     -- Include episode title in filename (skips generic names like "Episode 01").
+  skip_unknown_release_group = false, -- If true, omit [Unknown] tag when release group metadata is missing.
+  
+  -- LOGGING CONFIGURATION
+  log = {
+    enabled = true,                 -- Master switch for all custom logging below.
+    level = "info",                 -- Minimum log level: "error" < "warn" < "info" < "debug".
+    prefix = "LuaRenamer"            -- Prefix added to each log line for easy filtering in Shoko logs.
   },
-  media_tag_parts = {               -- Toggle each media property here to show/hide in the filename's (media_tag) segment.
-    resolution      = true,         -- Show video resolution (e.g. 1080p)
-    codec           = true,         -- Show video codec (e.g. HEVC, H264)
-    bitdepth        = true,         -- Show bit depth (e.g. 10bit)
-    fps             = false,        -- Show frames per second (e.g. 23.98fps)
-    hdr             = false,        -- Show HDR tag if present and not SDR
-    audio_codec     = false,        -- Show listed audio codecs (e.g. AAC, FLAC)
-    audio_channels  = false,        -- Show audio channel summary (e.g. 2ch, 6ch)
-    source          = true,         -- Show video source (WEB, BluRay, etc.)
+  
+  -- DESTINATION FOLDERS (FILE MOVING)
+  destinations = {
+    restricted   = "Saya Hentai Database",  -- Target Import Folder for restricted/adult anime.
+    unrestricted = "Saya Anime Database",   -- Target Import Folder for normal anime.
+    -- Note: Files that don't match either category remain in their current Import Folder (no move).
   },
-  illegal = {                       -- Windows filename character cleanup.
-    remove = true,                  -- If true, strip all illegal characters.
-    replace = false,                -- If true, replace illegal characters (when remove=false).
-    replacement = "_",              -- Replacement string for illegal chars (if replace=true).
-    pattern = '[<>:"/\\|%?%*]'      -- Pattern for illegal Windows filename characters.
+  
+  -- MEDIA TAG COMPONENTS (TECHNICAL SPECIFICATIONS)
+  -- Individual toggles for each property in the (MEDIA_TAG) segment of the filename.
+  -- Disabled properties are omitted; enabled properties appear in the order listed below.
+  media_tag_parts = {
+    resolution      = true,         -- Video resolution (e.g., 1080p, 720p, 2160p).
+    codec           = true,         -- Video codec (e.g., HEVC, H264, AV1).
+    bitdepth        = true,         -- Bit depth (e.g., 10bit, 8bit; omitted if 8bit or 0).
+    fps             = false,        -- Frame rate (e.g., 23.98fps, 60fps; formatted to remove trailing zeros).
+    hdr             = false,        -- HDR type (e.g., HDR10, DV; omitted if SDR).
+    audio_codec     = false,        -- Audio codec(s) (e.g., AAC, FLAC, multiple joined with +).
+    audio_channels  = false,        -- Audio channel configuration (e.g., 2ch, 5.1ch, multiple joined with +).
+    source          = true,         -- Video source (e.g., BluRay, WEB, DVD; mapped via config.mapping.source).
   },
-  mapping = {                       -- Map raw video source values to standardized tag.
+  
+  -- FILENAME SANITIZATION
+  illegal = {
+    remove = true,                  -- If true, remove illegal Windows filename characters.
+    replace = false,                -- If true (and remove=false), replace illegal characters with replacement string.
+    replacement = "_",              -- Replacement character for illegal chars (used when replace=true).
+    pattern = '[<>:"/\\|%?%*]'      -- Regex pattern matching illegal Windows filename characters.
+  },
+  
+  -- VIDEO SOURCE MAPPING
+  -- Standardizes raw source values to consistent tags in the filename.
+  mapping = {
     source = {
       BD = "BluRay",
       WEB = "WEB",
@@ -76,12 +114,12 @@ local config = {
 }
 
 -- ==========================
---       UTILITY FUNCTIONS
+--     UTILITY FUNCTIONS
 -- ==========================
 
--- Safely walk through nested tables using provided key sequence.
--- Returns nil if any key is missing.
--- Usage: safe(tbl, "key1", "key2", ...)
+-- Safely navigate nested table structures without throwing errors.
+-- Returns nil if any key in the path is missing, preventing nil indexing exceptions.
+-- Usage: safe(file, "media", "video", "res") instead of file.media.video.res
 local function safe(tbl, ...)
   if tbl == nil then return nil end
   local ref = tbl
@@ -93,8 +131,9 @@ local function safe(tbl, ...)
   return ref
 end
 
--- Create a string by joining all non-empty entries in a list with a given separator.
--- Used to build filenames from multiple metadata segments.
+-- Join non-empty strings from a list with a separator.
+-- Empty strings and nil values are automatically filtered out.
+-- Used to build filenames from metadata segments without extra separators.
 local function join_nonempty(list, sep)
   local out = {}
   for _, v in ipairs(list) do
@@ -105,7 +144,8 @@ local function join_nonempty(list, sep)
   return table.concat(out, sep)
 end
 
--- Sanitize a string: remove or replace illegal Windows filename characters, depending on config.
+-- Sanitize filename strings by removing or replacing illegal Windows characters.
+-- Behavior controlled by config.illegal (remove vs replace mode).
 local function sanitize(str, cfg)
   if not str or str == "" then return str end
   if cfg.illegal.remove then
@@ -116,35 +156,40 @@ local function sanitize(str, cfg)
   return str
 end
 
--- Standardize raw video 'source' value using config.mapping.source mapping table.
+-- Map raw video source values to standardized tags using config.mapping.source.
+-- Returns empty string for "Unknown" or missing sources.
 local function map_source(raw, cfg)
   if not raw or raw == "Unknown" then return "" end
   return cfg.mapping.source[raw] or raw
 end
 
--- Normalize language codes/names to a consistent canonical form used in config.native_audio_langs.
--- Returns nil for unknown/unwanted values so they can be filtered out.
+-- Normalize language codes and names to canonical forms (e.g., "jpn"/"ja" -> "Japanese").
+-- Returns nil for unknown/unwanted values (e.g., "Unknown", "und", "") so they can be filtered.
+-- Ensures consistent language names across different metadata sources (physical tracks, AniDB).
 local function normalize_language(lang)
   if not lang then return nil end
   if type(lang) ~= "string" then lang = tostring(lang) end
   local l = lang:lower()
+  -- ISO 639-2/639-1 codes and full names -> canonical form
   if l == "jpn" or l == "ja" or l == "japanese" then return "Japanese" end
   if l == "eng" or l == "en" or l == "english" then return "English" end
   if l == "chi" or l == "zh" or l == "chinese" then return "Chinese" end
   if l == "kor" or l == "ko" or l == "korean" then return "Korean" end
   if l == "unknown" or l == "und" or l == "" then return nil end
-  -- Fallback: keep original (capitalization may vary)
+  -- Fallback: preserve original (for less common languages with correct capitalization)
   return lang
 end
 
--- (Destination override removed; only restricted/unrestricted remain. Unknown/fallback cases won't move.)
+-- NOTE: Destination override functionality has been removed. Only restricted/unrestricted
+-- destinations remain. Files that don't match either category stay in their import folder.
 
 -- ==========================
---    SEGMENT GENERATORS
+--   FILENAME SEGMENT BUILDERS
 -- ==========================
 
--- Construct the release group name segment in square brackets.
--- Falls back to [Unknown] if unavailable.
+-- Build release group tag in square brackets (e.g., [Doki], [SubsPlease]).
+-- Uses shortname if available, falls back to full name, then [Unknown].
+-- Can be omitted entirely if config.skip_unknown_release_group=true and group is unknown.
 local function build_group(file)
   if not file then return config.skip_unknown_release_group and "" or "[Unknown]" end
   local rg = safe(file, "anidb", "releasegroup")
@@ -155,9 +200,15 @@ local function build_group(file)
 end
 
 -- ==========================
---       LOGGING SUPPORT
+--      LOGGING SUPPORT
 -- ==========================
+
+-- Logging levels ordered by severity (lower number = higher priority).
 local LEVEL_ORDER = { error = 1, warn = 2, info = 3, debug = 4 }
+
+-- Centralized logging function with level-based filtering.
+-- Only logs messages at or above the configured threshold level.
+-- Formats messages with [prefix][LEVEL] prefix for easy filtering in Shoko logs.
 local function logcfg(level, msg)
   local cfg = config.log
   if not cfg or not cfg.enabled then return end
@@ -176,7 +227,8 @@ local function logcfg(level, msg)
   end
 end
 
--- Construct the anime title segment using the preferred language, truncated and sanitized.
+-- Build anime title segment using preferred language.
+-- Truncates to config.max_name_len and sanitizes illegal characters.
 local function build_anime_name(anime, cfg)
   if not anime then return "Unknown Anime" end
   local n = anime:getname(cfg.anime_language) or anime.preferredname or "Unknown Anime"
@@ -185,8 +237,7 @@ local function build_anime_name(anime, cfg)
   return n
 end
 
--- Construct the year segment in parentheses, if enabled and available.
--- E.g.: "(2024)"
+-- Build year tag in parentheses (e.g., "(2024)") if enabled and air date is available.
 local function build_year(anime, cfg)
   if not cfg.include_year or not anime then return "" end
   local startyear = safe(anime, "airdate", "year")
@@ -196,7 +247,9 @@ local function build_year(anime, cfg)
   return ""
 end
 
--- Construct the episode number segment. Supports single/multi-episode numbers, adds version when present.
+-- Build episode number segment with proper zero-padding.
+-- Handles single episodes, multi-episode ranges (e.g., "01-03"), and file versions (e.g., "01v2").
+-- Omits episode number for movies with "Complete Movie" title.
 local function build_episode_number(anime, episode, episodes, file)
   if not anime or not file then return "" end
   local engepname = episode and episode:getname(Language.English) or ""
@@ -234,7 +287,9 @@ local function build_episode_number(anime, episode, episodes, file)
   return epnum
 end
 
--- Construct the episode name segment, if enabled and criteria met.
+-- Build episode title segment if enabled and meets criteria.
+-- Only includes for single-episode files (not batches).
+-- Skips generic names like "Episode 01", "OVA", "Complete Movie".
 local function build_episode_name(anime, episode, episodes, cfg)
   if not cfg.include_episode_name then return "" end
   if not episode or not episodes or #episodes ~= 1 then return "" end
@@ -249,23 +304,25 @@ local function build_episode_name(anime, episode, episodes, cfg)
   return epname
 end
 
--- Collect dub and subtitle languages, using AniDB lists if enabled and available.
+-- Collect and normalize audio and subtitle languages from file metadata.
+-- If config.prefer_anidb_lang_lists=true, AniDB language lists override physical track detection.
+-- Returns two arrays: normalized audio languages (dub) and subtitle languages.
+-- Filters out "Unknown" and normalizes ISO codes (jpn->Japanese, eng->English, etc.).
 local function collect_language_sets(file, anime, cfg)
   local raw_dub = {}
   local raw_sub = {}
   if not file then return raw_dub, raw_sub end
 
-  -- Audio tracks languages
+  -- Collect raw languages from physical tracks
   local audio_tracks = safe(file, "media", "audio") or {}
   for _, track in ipairs(audio_tracks) do
     if track.language then table.insert(raw_dub, track.language) end
   end
 
-  -- Subtitle languages (string array)
   local sub_tracks = safe(file, "media", "sublanguages") or {}
   for _, sl in ipairs(sub_tracks) do table.insert(raw_sub, sl) end
 
-  -- AniDB preferred lists override raw when requested
+  -- Optionally override with curated AniDB language lists
   if cfg.prefer_anidb_lang_lists and file.anidb then
     local adub = safe(file, "anidb", "media", "dublanguages")
     local asub = safe(file, "anidb", "media", "sublanguages")
@@ -273,7 +330,7 @@ local function collect_language_sets(file, anime, cfg)
     if asub then raw_sub = asub end
   end
 
-  -- Normalize + distinct filtering
+  -- Normalize languages and remove duplicates/unknowns
   local dub_set = {}
   local sub_set = {}
   for _, lang in ipairs(raw_dub) do
@@ -292,13 +349,17 @@ local function collect_language_sets(file, anime, cfg)
   table.sort(dublangs)
   table.sort(sublangs)
 
-  -- Logging of normalized sets (debug level)
+  -- Debug logging of final normalized language sets
   if #dublangs > 0 then logcfg("debug", "Normalized audio languages => " .. table.concat(dublangs, ",")) end
   if #sublangs > 0 then logcfg("debug", "Normalized subtitle languages => " .. table.concat(sublangs, ",")) end
   return dublangs, sublangs
 end
 
--- Build language tag ([DUAL-AUDIO], [MULTI-AUDIO], [DUB]) based on detected languages.
+-- Build audio language tag based on detected dub languages.
+-- [DUAL-AUDIO]: Exactly 2 languages, one native + one non-native.
+-- [MULTI-AUDIO]: 3 or more languages.
+-- [DUB]: Non-native language(s) present (but not dual/multi criteria).
+-- Native languages defined in config.native_audio_langs (Japanese, Chinese, Korean by default).
 local function build_language_tag(dublangs, cfg)
   if not cfg.include_audio_tag then return "" end
   local total = #dublangs
@@ -319,7 +380,8 @@ local function build_language_tag(dublangs, cfg)
   return ""
 end
 
--- Build censorship tag ([CEN] or [UNCEN]) for restricted anime if enabled.
+-- Build censorship tag for restricted (adult) anime: [CEN] or [UNCEN].
+-- Only applies to anime marked as restricted; skipped for normal anime.
 local function build_censorship_tag(anime, file, cfg)
   if not cfg.include_censorship or not anime or not file then return "" end
   if not anime.restricted then return "" end
@@ -328,7 +390,8 @@ local function build_censorship_tag(anime, file, cfg)
   return censored and "[CEN]" or "[UNCEN]"
 end
 
--- Build hash tag segment ([CRC]), can be extended for other hashes.
+-- Build hash tag segment (currently CRC only, can be extended for MD5/SHA1).
+-- CRC is converted to uppercase for consistency.
 local function build_hash_tag(file, cfg)
   if not cfg.include_crc or not file then return "" end
   local crc = safe(file, "hashes", "crc")
@@ -338,37 +401,42 @@ local function build_hash_tag(file, cfg)
   return ""
 end
 
--- Build media technical info tag (resolution, codec, bitdepth, fps, HDR, audio codecs, channels, source).
--- Controlled entirely by config.media_tag_parts toggles.
+-- Build comprehensive media technical info tag: (resolution codec bitdepth fps HDR audio source).
+-- Each property is individually controlled by config.media_tag_parts toggles.
+-- Properties appear in a fixed order; disabled properties are omitted.
+-- Examples: (1080p HEVC 10bit BluRay), (720p H264 WEB), (2160p HEVC HDR10 BluRay).
 local function build_media_tags(file, cfg)
   if not file then return "" end
   local parts_cfg = cfg.media_tag_parts
 
-  -- Extract candidate media properties from file metadata
+  -- VIDEO PROPERTIES
   local res      = safe(file, "media", "video", "res") or ""
   local codec    = safe(file, "media", "video", "codec") or ""
+  
+  -- Bit depth (omit 8bit and 0 as they're standard/unknown)
   local bitdepth = ""
   local bd       = safe(file, "media", "video", "bitdepth")
   if parts_cfg.bitdepth and bd and bd ~= 8 and bd ~= 0 then
     bitdepth = bd .. "bit"
   end
 
+  -- Frame rate (formatted to remove trailing zeros: 23.98fps, 60fps)
   local fps = ""
   local vfps = safe(file, "media", "video", "framerate")
   if parts_cfg.fps and vfps and vfps > 0 then
     local fpsstr = string.format("%.2f", vfps)
-    -- Remove trailing zeros and decimal point if whole number
     fpsstr = fpsstr:gsub("%.?0+$", "")
     fps = fpsstr .. "fps"
   end
 
+  -- HDR type (omit SDR as it's the default)
   local hdr = ""
   local video_dynamic_range = safe(file, "media", "video", "dynamicrange")
   if parts_cfg.hdr and video_dynamic_range and video_dynamic_range ~= "SDR" then
     hdr = video_dynamic_range
   end
 
-  -- Audio codecs and channel summary
+  -- AUDIO PROPERTIES (multiple tracks aggregated)
   local audio_codec = ""
   local channels    = ""
   if parts_cfg.audio_codec or parts_cfg.audio_channels then
@@ -383,16 +451,19 @@ local function build_media_tags(file, cfg)
         channel_set[track.channels] = true
       end
     end
+    
+    -- Multiple codecs joined with + (e.g., AAC+FLAC)
     if parts_cfg.audio_codec and next(codec_set) then
       local tmp = {}
       for c,_ in pairs(codec_set) do table.insert(tmp, c) end
       table.sort(tmp)
       audio_codec = table.concat(tmp, "+")
     end
+    
+    -- Channel counts formatted without decimals for whole numbers (2ch, 5.1ch)
     if parts_cfg.audio_channels and next(channel_set) then
       local tmp = {}
       for c,_ in pairs(channel_set) do 
-        -- Format channels properly (remove decimal if it's a whole number)
         local ch_str = type(c) == "number" and string.format("%.1f", c):gsub("%.0$", "") or tostring(c)
         table.insert(tmp, ch_str) 
       end
@@ -405,12 +476,13 @@ local function build_media_tags(file, cfg)
     end
   end
 
+  -- VIDEO SOURCE (mapped to standardized values)
   local source = ""
   if parts_cfg.source then
     source = map_source(safe(file, "anidb", "source"), cfg)
   end
 
-  -- Build the list in fixed order per config toggles
+  -- Assemble all enabled properties in fixed order
   local tag_parts = {}
   if parts_cfg.resolution    and res ~= ""       then table.insert(tag_parts, res) end
   if parts_cfg.codec         and codec ~= ""     then table.insert(tag_parts, codec) end
@@ -426,16 +498,18 @@ local function build_media_tags(file, cfg)
 end
 
 -- ==========================
---         MAIN LOGIC
+--   MAIN EXECUTION LOGIC
 -- ==========================
 
--- Safety check: ensure minimum required data is available
+-- FALLBACK: Handle cases where essential metadata is missing.
+-- If anime or file object is unavailable, use the original filename (sanitized).
+-- No destination is set, so the file remains in its current Import Folder.
 if not anime or not file then
-  logcfg("warn", "Missing anime or file; using fallback naming (no move).")
+  logcfg("warn", "Missing anime or file metadata; using fallback naming (no move).")
   local rawname = (file and file.name or "Unknown File")
   filename = rawname:gsub('[<>:"/\\|%?%*]', "")
   subfolder = { "Unmapped Files" }
-  -- destination left nil to keep file in its current import folder
+  -- Destination left nil: file stays in current Import Folder
   logcfg("info", "Fallback filename (stay) => " .. filename)
   return
 end
@@ -443,7 +517,8 @@ end
 logcfg("debug", "Starting rename for file: " .. (file.name or "(no name)"))
 logcfg("debug", "Anime candidate: " .. (anime.preferredname or anime:getname(config.anime_language) or "(unknown)"))
 
--- Step 1: Build all filename segments from metadata
+-- STEP 1: Build all filename segments from metadata.
+-- Each segment builder handles its own nil-safety and returns empty string if data unavailable.
 local group      = build_group(file)
 if group ~= "" then logcfg("debug", "Group segment => " .. group) else logcfg("debug", "Group segment omitted") end
 local animename  = build_anime_name(anime, config)
@@ -466,26 +541,29 @@ if crctag ~= "" then logcfg("debug", "CRC tag => " .. crctag) end
 local media_tag  = build_media_tags(file, config)
 if media_tag ~= "" then logcfg("debug", "Media tag => " .. media_tag) end
 
--- Step 2: Construct a parts table in desired filename order.
--- To change file name format, reorder entries here.
+-- STEP 2: Assemble filename segments in desired order.
+-- Reorder entries in this array to change the filename structure.
 local parts = {
   group,       -- [ReleaseGroup]
   animename,   -- Anime title
-  epnum,       -- Episode number / range (empty for certain movie types)
-  epname,      -- Episode name (conditional)
-  media_tag,   -- (Technical info: resolution, codec, etc.)
-  langtag,     -- [DUB]/[DUAL-AUDIO]/[MULTI-AUDIO] or empty
-  centag,      -- [CEN]/[UNCEN] if restricted
-  year_tag,    -- (Year) – if available or empty
-  crctag       -- [CRC]
+  epnum,       -- Episode number/range (e.g., 01, 01-03, 01v2)
+  epname,      -- Episode name (conditional, single-episode only)
+  media_tag,   -- (Technical specifications: resolution, codec, etc.)
+  langtag,     -- [DUAL-AUDIO], [MULTI-AUDIO], [DUB], or empty
+  centag,      -- [CEN] or [UNCEN] for restricted anime
+  year_tag,    -- (Year) if enabled
+  crctag       -- [CRC] hash
 }
 
--- Step 3: Build and sanitize the filename
+-- STEP 3: Build and sanitize the final filename.
+-- Joins non-empty segments with spaces, normalizes whitespace, removes illegal characters.
+-- IMPORTANT: 'filename' must remain a global variable without extension (Shoko requirement).
 filename = join_nonempty(parts, " "):cleanspaces(config.space_char)
 filename = sanitize(filename, config)
 logcfg("debug", "Final filename => " .. filename)
 
--- Step 4: Build the target folder name from anime ID, fallback for error/unknown.
+-- STEP 4: Build the target subfolder name.
+-- Format: "Anime Name [anidb-12345]" or "Anime Name [anidb-err]" if ID unavailable.
 foldername = ""
 if anime.id then
   foldername = animename .. " [anidb-" .. tostring(anime.id) .. "]"
@@ -495,36 +573,45 @@ end
 subfolder = { foldername }
 logcfg("debug", "Subfolder => " .. foldername)
 
--- Step 5: Set destination folder for file move based on restriction (adult/hentai logic).
--- Destination decision: only set destination for restricted/unrestricted; otherwise leave nil (stay in place)
+-- STEP 5: Determine destination Import Folder for file movement.
+-- Only restricted/unrestricted destinations are supported.
+-- If neither matches (or config empty), destination remains nil and file stays in place.
 if anime.restricted and config.destinations.restricted then
   destination = config.destinations.restricted
 elseif (not anime.restricted) and config.destinations.unrestricted then
   destination = config.destinations.unrestricted
 else
-  destination = nil -- stay
+  destination = nil -- File stays in current Import Folder
 end
 logcfg("debug", "Destination => " .. tostring(destination))
 
 -- ==========================
---       SUMMARY LOG LINE
+--    SUMMARY LOG OUTPUT
 -- ==========================
+-- Logs the original and new file paths for comparison (INFO level).
+-- Only logs when the filename actually changes (case-insensitive comparison).
+-- If destination is nil (file stays), displays "(stay)" instead of destination folder.
+
 local original_name = file.name or "(no original name)"
 local extension = file.extension and ("." .. file.extension) or ""
--- Original full path uses the current import folder location (before move) combined with file.path
+
+-- Construct original full path (before rename/move)
 local import_loc = safe(file, "importfolder", "location") or "(unknown-import)"
 local original_rel = file.path or original_name
 local original_full_path = import_loc .. "/" .. original_rel
+
+-- Construct new full path (after rename/move)
 local new_full_path
 if destination then
   new_full_path = table.concat({ tostring(destination), foldername, filename .. extension }, "/")
 else
   new_full_path = table.concat({ "(stay)", foldername, filename .. extension }, "/")
 end
-    -- Only log summary if filename actually changed (case-insensitive comparison)
-    if original_name:lower() ~= filename:lower() then
-      logcfg("info", string.format("%-8s : %s", "ORIGINAL", original_full_path))
-      logcfg("info", string.format("%-8s : %s", "NEW", new_full_path))
-    else
-      logcfg("debug", "Filename unchanged; summary suppressed.")
-    end
+
+-- Only log if filename changed (case-insensitive comparison)
+if original_name:lower() ~= filename:lower() then
+  logcfg("info", string.format("%-8s : %s", "ORIGINAL", original_full_path))
+  logcfg("info", string.format("%-8s : %s", "NEW", new_full_path))
+else
+  logcfg("debug", "Filename unchanged; summary suppressed.")
+end
